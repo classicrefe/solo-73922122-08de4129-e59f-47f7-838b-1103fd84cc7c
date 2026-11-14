@@ -40,6 +40,7 @@ PRIMARY_DSN = os.environ.get(
 BASEBACKUP_DIR = Path(os.environ.get("BASEBACKUP_DIR", "/basebackup/base"))
 MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", "/basebackup/manifest.json"))
 RUNS_DIR = Path(os.environ.get("RUNS_DIR", "/recovery"))
+ARCHIVE_DIR = Path(os.environ.get("ARCHIVE_DIR", "/wal_archive"))
 RESTORE_SCRIPT = os.environ.get("RESTORE_SCRIPT", "/opt/app/restore_command.sh")
 RECOVERY_PORT = int(os.environ.get("RECOVERY_PORT", "5433"))
 RECOVERY_DB = os.environ.get("RECOVERY_DB", "telemetry")
@@ -131,12 +132,46 @@ def fail(run: dict, msg: str, pgdata: Path | None = None):
         mgr.state = FAILED
 
 
+def preflight_archive_ready(manifest: dict) -> None:
+    """发起恢复前的归档就绪门禁。
+
+    只看“本次恢复所需的 WAL 段是否真正完整归档”（最终段名存在、尺寸符合清单），
+    不看 pg_stat_archiver 的历史 failed_count——历史失败已被重试修复时，计数仍会
+    保留，但不影响当前恢复。未就绪直接抛错，绝不带着缺段启动恢复实例。
+    """
+    wa = manifest.get("wal_archive") or {}
+    required = wa.get("required_wal_files")
+    seg_size = wa.get("segment_size_bytes")
+    if not required:
+        # 兼容旧清单：没有区间信息时退化为仅检查备份存在
+        return
+    missing, short = [], []
+    for name in required:
+        p = ARCHIVE_DIR / name
+        if not p.is_file():
+            missing.append(name)
+        elif seg_size and p.stat().st_size != seg_size:
+            short.append(f"{name}({p.stat().st_size}!={seg_size})")
+    if missing or short:
+        detail = []
+        if missing:
+            detail.append("缺失段: " + ",".join(missing[:5]))
+        if short:
+            detail.append("尺寸异常段: " + ",".join(short[:5]))
+        raise RuntimeError("恢复所需 WAL 未完整归档，拒绝启动恢复：" + "；".join(detail))
+
+
 def do_recovery(run: dict):
     rundir = Path(run["rundir"])
     pgdata = rundir / "pgdata"
     logfile = rundir / "postgres.log"
     rp = run["restore_point"]
     try:
+        # ---- 0. 归档就绪预检：所需 WAL 未真正完整归档则直接失败，不启动实例 ----
+        mgr.event("预检恢复所需 WAL 归档是否完整（按清单段区间逐段核对最终段名与尺寸）")
+        preflight_archive_ready(load_manifest())
+        mgr.event("归档就绪预检通过：恢复所需 WAL 段均已完整发布，恢复实例不会读到写入中的归档")
+
         # ---- 1. 复制物理基线备份 ----
         mgr.event(f"复制物理基线备份 {BASEBACKUP_DIR} -> {pgdata}")
         shutil.copytree(BASEBACKUP_DIR, pgdata, symlinks=True)

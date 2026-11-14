@@ -60,6 +60,7 @@ label.chk{display:flex;gap:8px;align-items:flex-start;margin:10px 0;color:var(--
     <section class="card">
       <h2>② 恢复编排</h2>
       <div id="manifestNote" class="mut small">加载清单中…</div>
+      <div id="walReady" class="small"></div>
       <div id="rpList"></div>
       <label class="chk" id="faultWrap" style="display:none">
         <input type="checkbox" id="injectFault"/>
@@ -154,6 +155,15 @@ function renderPlan(){
   $('#faultWrap').style.display = 'flex';
   $('#injectFault').disabled = !idle;
   $('#startBtn').disabled = !idle;
+  const wa = manifest.wal_archive;
+  if(wa){
+    $('#walReady').innerHTML =
+      `<div class="small ok">✔ 清单门禁：恢复所需 ${esc(wa.required_wal_files?.length || 0)} 个 WAL 段 ` +
+      `（${esc(wa.required_start_wal)} → ${esc(wa.required_end_wal)}）已完整归档并通过 ${esc(wa.verified_with)}，` +
+      `含 ${wa.restore_point_records_seen ?? 0} 条命名恢复点记录</div>` +
+      `<div class="small mut">归档器历史失败计数 failed_count=${wa.archiver_failed_count_at_manifest ?? 0} 仅作参考，` +
+      `不影响清单与恢复——重试修复后的归档以“段是否完整”为准</div>`;
+  }
 }
 
 async function pollPrimary(){
@@ -167,7 +177,7 @@ async function pollPrimary(){
         <div><span class="mut small">最新 recorded_at</span><b style="font-size:12px">${esc(s.latest_recorded_at)}</b></div>
         <div><span class="mut small">已归档 WAL 段数</span><b>${s.archiver.archived_count}</b></div>
       </div>
-      <div class="small mut">最近归档段 ${esc(s.archiver.last_archived_wal)} @ ${esc(s.archiver.last_archived_time)} · 归档失败 ${s.archiver.failed_count} 次</div>
+      <div class="small mut">最近归档段 ${esc(s.archiver.last_archived_wal)} @ ${esc(s.archiver.last_archived_time)} · 归档器历史失败 ${s.archiver.failed_count} 次（累计计数，重试修复后不归零；归档可用性以段完整性为准）</div>
       <div class="small ok">✔ 原库持续入仓中，恢复演练与其互不影响（心跳数据在恢复点之后产生，不会出现在恢复库）</div>`;
   }catch(e){ $('#primaryBody').innerHTML = '<span class="bad">'+esc(e.message)+'</span>'; }
 }

@@ -10,6 +10,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       TZ: Asia/Shanghai
+    entrypoint: ["/opt/entrypoint-wrap.sh"]
     command:
       - postgres
       - -c
@@ -17,7 +18,8 @@ services:
       - -c
       - archive_mode=on
       - -c
-      - "archive_command=test ! -f /wal_archive/%f && cp %p /wal_archive/%f"
+      # 归档交接：完整复制并逐字节核对后才原子发布；失败可重试修复，同名一致幂等、异内容拒绝覆盖
+      - "archive_command=/opt/archive_command.sh %p %f"
       - -c
       - archive_timeout=60
       - -c
@@ -28,13 +30,16 @@ services:
       - pgdata_primary:/var/lib/postgresql/data
       - wal_archive:/wal_archive
       - ./primary/initdb:/docker-entrypoint-initdb.d:ro
+      - ./primary/entrypoint-wrap.sh:/opt/entrypoint-wrap.sh:ro
+      - ./primary/archive_command.sh:/opt/archive_command.sh:ro
+      - ./tests:/tests:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d telemetry"]
       interval: 3s
       timeout: 3s
       retries: 40
 
-  # ---------- 一次性初始化：造数 + 物理基线备份 + 两个命名恢复点 + 归档校验 + 清单 ----------
+  # ---------- 一次性初始化：造数 + 物理基线备份 + 两个命名恢复点 + 归档完备性校验 + 清单 ----------
   setup:
     image: postgres:16
     container_name: trd-setup
@@ -43,7 +48,9 @@ services:
         condition: service_healthy
     volumes:
       - ./setup/setup.sh:/opt/setup.sh:ro
+      - ./setup/wal_helpers.sh:/opt/wal_helpers.sh:ro
       - basebackup:/basebackup
+      - wal_archive:/wal_archive:ro
     entrypoint: ["/bin/bash", "/opt/setup.sh"]
     restart: "no"
 
